@@ -73,4 +73,5 @@ Wall considered feasible are the ones providing economic value.
 
 ----------------------
 Find the code here: http://bit.ly/SeaWallTB
-Five hundred lines of codes and still developping. Please contact me if you wish to contribute!
+
+Five hundred lines of codes and still developping. Please contact me if you wish to contribute.
