@@ -142,7 +142,7 @@ def createContour(demRaster, demValue):
     del line, lines
 
     # Now extend the remaining lines to avoid any gap (Necessary for coastal segment delimitation)
-    arcpy.ExtendLine_edit(demLineRaw)
+    arcpy.ExtendLine_edit(demLineRaw, "1500 Feet")
 
     # Dissolve the remaining polyline to fomr only one feature (Necessary for coastal segment delimitation)
     dissolved = arcpy.Dissolve_management(demLineRaw, 'demLine'+str(demValue)+'.shp', ["FID"])
