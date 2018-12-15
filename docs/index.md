@@ -17,10 +17,10 @@ To create an ArcToolbox tool with which to execute this script, do the following
     before pressing OK or Finish.
         
 | DISPLAY NAME                   | DATA TYPE          | PROPERTY > DIRECTION > VALUE | PROPERTY > DEFAULT > VALUE  | PROPERTY > OBTAINED FROM > VALUE |   
-|--------------------------------|--------------------|------------------------------|----------------------------:|----------------------------------|
+|--------------------------------|--------------------|:-----------------------------|:----------------------------|:---------------------------------|
 | Raster elevation data          | Raster Layer       | Input                        |                             |                                  |
-| Mean High Water                | Long               | Input                        | 4                           |                                  | 
-| Chosen surge level             | Long               | Input                        | 15                          |                                  |
+| Mean High Water                | Long               | Input                        |  4                          |                                  | 
+| Chosen surge level             | Long               | Input                        |  15                         |                                  |
 | Shapefile of the properties    | Feature Layer      | Input                        |                             |                                  |
 | Field with building values     | Field              | Input                        |                             | Shapefile of the properties      |
 | Unique ID field of buildings   | Field              | Input                        |                             | Shapefile of the properties      |
