@@ -66,3 +66,11 @@ For the selected properties, average elevation can be calculated using Zonal Sta
 > This tool will use a simple Total Benefit Analysis for the wall by calculating total annual benefits/damages for each segment and the benefits per segment length units. These damages are caluculated based on the percent of damage given the average elevation of the property and the user-defined storm surge level. 
 
 Wall considered feasible are the ones providing economic value.
+
+<br/>
+<br/>
+<br/>
+
+----------------------
+Find the code here: http://bit.ly/SeaWallTB
+Five hundred lines of codes and still developping. Please contact me if you wish to contribute!
