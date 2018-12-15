@@ -72,6 +72,6 @@ Wall considered feasible are the ones providing economic value.
 <br/>
 
 ----------------------
-Find the code here: http://bit.ly/SeaWallTB
+Find the code here: http://bit.ly/SeaWallTB, and the .tbx file is available for download at: http://bit.ly/SeaWallTBX
 
 Five hundred lines of codes and still developping. Please contact me if you wish to contribute.
