@@ -12,7 +12,7 @@ Expert knowledge of the storm surges on the locality of interest.
 The toolbox is available for download at...
 
 ------------------
-### EXPLANATION of the TOOL and the CODE
+### HOW it WORKS
 Within a specific coastline there are main entry points where the storm surges can come in.
 Each entry point will affect the decision in the design, nature, and feasibility of the seawall to be established.
 One of the main challenge in coastal defense is the identification of these entry points and consequently the delimitation of the coastal segment for each seawall. 
