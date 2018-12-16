@@ -9,7 +9,6 @@ High resolution elevation data (ideally Lidar).
 Geospatial data (shapefile) of the properties and their economic values.
 Expert knowledge of the storm surges on the locality of interest.
 
-The toolbox is available for download at...
 
 ------------------
 ### HOW it WORKS
@@ -17,7 +16,7 @@ Within a specific coastline there are main entry points where the storm surges c
 Each entry point will affect the decision in the design, nature, and feasibility of the seawall to be established.
 One of the main challenge in coastal defense is the identification of these entry points and consequently the delimitation of the coastal segment for each seawall. 
 
-![Sea water flooding](https://github.com/rajaoberison/rajaoberison.github.io/blob/master/img/seawall0.png)
+![Sea water flooding](https://rajaoberison.github.io/SeaWallToolBox/images/seawall0.png)
 
 > As storm surge intensify, longer walls are needed. The ability to predict identify potential water entry during the design of the wall is therefore crucial as the storm intensity are expected to increase in the future.
 
