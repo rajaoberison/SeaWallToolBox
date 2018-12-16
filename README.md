@@ -17,7 +17,7 @@ Within a specific coastline there are main entry points where the storm surges c
 Each entry point will affect the decision in the design, nature, and feasibility of the seawall to be established.
 One of the main challenge in coastal defense is the identification of these entry points and consequently the delimitation of the coastal segment for each seawall. 
 
-![Sea water flooding](https://rajaoberison.github.io/img/seawall0.png)
+![Sea water flooding](https://github.com/rajaoberison/rajaoberison.github.io/blob/master/img/seawall0.png)
 
 > As storm surge intensify, longer walls are needed. The ability to predict identify potential water entry during the design of the wall is therefore crucial as the storm intensity are expected to increase in the future.
 
@@ -25,7 +25,7 @@ One of the main challenge in coastal defense is the identification of these entr
 Given these challenges, 3 main questions are to be answered prior to a seawall construction:
 * How many segments are there within the study area?
 * What and how much are the capital in harms’ way for each segment?
-* Which of the segments are worth protecting economically and ecologically? <img align="right" width="240" height="157" src="https://rajaoberison.github.io/img/seawall1.png">
+* Which of the segments are worth protecting economically and ecologically? <img align="right" width="240" height="157" src="https://github.com/rajaoberison/rajaoberison.github.io/blob/master/img/seawall1.png">
 
 Which requires the availability of these information: 
 * Elevation data of the region
@@ -35,7 +35,7 @@ Which requires the availability of these information:
 <br/>
 
 -------------------
-#### 1. How many segments? <img align="right" width="188" height="282" src="https://rajaoberison.github.io/img/seawall2.png">
+#### 1. How many segments? <img align="right" width="188" height="282" src="https://github.com/rajaoberison/rajaoberison.github.io/blob/master/img/seawall2.png">
 Segments location and length depend on the scenario (defined by the expert) in the design of the seawall.
 
 Two elevation values need to be identified in order to determine the segments:
@@ -47,7 +47,7 @@ Then for each of the two elevation values, contour lines will be created and sea
 <br/>
 
 ----------------------
-#### 2. What capitals are in harms’ way? <img align="right" width="212" height="282" src="https://rajaoberison.github.io/img/seawall3.png">
+#### 2. What capitals are in harms’ way? <img align="right" width="212" height="282" src="https://github.com/rajaoberison/rajaoberison.github.io/blob/master/img/seawall3.png">
 
 When the segments is delimited, they will be connected with their corresponding storm surge line: which will produce a polygon, a region of interest for each segment.
 
@@ -60,7 +60,7 @@ With the spatial data of the properties available, ArcGIS’s Select by Location
 <br/>
 
 ----------------------
-#### 3. How much are the potential damages? <img align="right" width="230" height="275" src="https://rajaoberison.github.io/img/seawall4.png">
+#### 3. How much are the potential damages? <img align="right" width="230" height="275" src="https://github.com/rajaoberison/rajaoberison.github.io/blob/master/img/seawall4.png">
 For the selected properties, average elevation can be calculated using Zonal Statistics as Table, and then damages from storm can be calculated. 
 
 > This tool will use a simple Total Benefit Analysis for the wall by calculating total annual benefits/damages for each segment and the benefits per segment length units. These damages are caluculated based on the percent of damage given the average elevation of the property and the user-defined storm surge level. 
