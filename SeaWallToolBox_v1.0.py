@@ -26,7 +26,6 @@ To create an ArcToolbox tool with which to execute this script, do the following
 
 # -*- coding: utf-8 -*-
 import sys, os, string, math, arcpy, traceback, time
-from time import sleep
 from datetime import datetime
 
 
@@ -71,8 +70,8 @@ def spatialJoin(target_feature, source_feature, in_field, out_field, stats, outp
     fieldmappings.addTable(source_feature)
    
     # Remove unnecessary fields
-    # We'll ultimately use length so we keep it here
-    keepers = [in_field, "Length"]
+    # We'll ultimately use length and ID so we keep it here
+    keepers = [in_field, "Length", "Id"]
     for field in fieldmappings.fields:
         if field.name not in keepers:
              fieldmappings.removeFieldMap(fieldmappings.findFieldMapIndex(field.name))
@@ -95,57 +94,45 @@ def spatialJoin(target_feature, source_feature, in_field, out_field, stats, outp
 #---------------------------------------------------------------------------------------------------------------------#
 # FUNCTION TO CREATE CONTOUR LINES FROM A SPECIFIC DEM VALUE
 #---------------------------------------------------------------------------------------------------------------------#
-def createContour(demRaster, demValue):
+def createContour(contourLines, demValue):
     # Start a timer 
     time1 = time.clock()
     arcpy.AddMessage("\nCreating countour line at "+str(demValue)+" Feet. "+str(datetime.now()))
 
-    # Smooth the Raster DEM (with Focal Statistics) to obtain contiguous contour line
-    focal0 = arcpy.sa.FocalStatistics(demRaster, arcpy.sa.NbrCircle(30, "CELL"), "MEAN")
-    focal1 = arcpy.sa.FocalStatistics(focal0, arcpy.sa.NbrCircle(30, "CELL"), "MEAN")
-    focal2 = arcpy.sa.FocalStatistics(focal1, arcpy.sa.NbrCircle(30, "CELL"), "MEAN")
+    # First let's make a layer of the contours
+    arcpy.MakeFeatureLayer_management(contourLines, 'contourLines_lyr')
 
-    # Reclassify the smoothed raster obtain the pixels around the dem value
-    DEM = float(demValue)
-    # Because of the smooth get lower set dem range to be higher for values > 6 and lower for < 6
-    # The numbers used are just my choice based on iterative observations
-    if DEM > 6:
-         first_reclassify = arcpy.sa.Reclassify(focal2, "VALUE", arcpy.sa.RemapRange([[DEM-.1, DEM+.5, 1]]),\
-                                                "NODATA")
-    else:
-         first_reclassify = arcpy.sa.Reclassify(focal2, "VALUE", arcpy.sa.RemapRange([[DEM-.4, DEM+.1, 1]]),\
-                                                "NODATA")
+    # Select the corresponding contour lines
+    contours_at_dem = arcpy.SelectLayerByAttribute_management(\
+                         "contourLines_lyr", "ADD_TO_SELECTION", '"Contour" = {0}'.format(demValue))
 
-    # Remove the remmaining small cluster of pixels
-    # The numbers used are just my choice based on iterative observations
-    reg_group = arcpy.sa.RegionGroup(first_reclassify)
-    set_nul = arcpy.sa.SetNull(in_conditional_raster=reg_group, in_false_raster_or_constant=1,\
-                               where_clause="Count < 10000")
-    nibbled = arcpy.sa.Nibble(first_reclassify, set_nul)
+    raw_contours = arcpy.CopyFeatures_management(contours_at_dem, "raw_contours_"+str(demValue)+".shp")
+    smoothed0 = arcpy.cartography.SmoothLine(raw_contours, "smoothed0"+str(demValue)+".shp", "PAEK", "10 Feet")
 
-    # Now thin the raster to obtain a one pixel width raster value that's good to be converted to polyline
-    thinned = arcpy.sa.Thin(in_raster=nibbled, background_value="NODATA", maximum_thickness=1000)
-
-    # Reclassify necessary for the thinned raster
-    second_reclassify = arcpy.sa.Reclassify(thinned, "VALUE", arcpy.sa.RemapValue([["1", 1]]), "NODATA")
-
-    # Now Convert to Polyline
-    demLineRaw = arcpy.RasterToPolyline_conversion(in_raster=second_reclassify,out_polyline_features=\
-                                                   'demLineraw'+str(demValue)+'.shp', simplify= "SIMPLIFY")
-
-    # If there are remianing small lines, remove them 
-    with arcpy.da.UpdateCursor(demLineRaw, ["SHAPE@LENGTH"]) as lines:
+    # If there are small lines in the selected, remove them
+    # Users are not yet given control of this. Values given are based on my visual analysis of Branford case 
+    if int(demValue) < 5:
+         th = 5000
+    elif int(demValue) >= 5:
+         th = 2000
+         
+    with arcpy.da.UpdateCursor(smoothed0, ["SHAPE@LENGTH"]) as lines:
          for line in lines:
-              if line[0] < 2000:
+              if line[0] < th:
                    lines.deleteRow()
 
     del line, lines
 
-    # Now extend the remaining lines to avoid any gap (Necessary for coastal segment delimitation)
-    arcpy.ExtendLine_edit(demLineRaw, "1500 Feet")
+    # Now smooth the lines to remove other noises and for better visualization
+    smoothed = arcpy.cartography.SmoothLine(smoothed0, "smoothed"+str(demValue)+".shp", "PAEK", "10 Feet")
 
     # Dissolve the remaining polyline to fomr only one feature (Necessary for coastal segment delimitation)
-    dissolved = arcpy.Dissolve_management(demLineRaw, 'demLine'+str(demValue)+'.shp', ["FID"])
+    dissolved = arcpy.Dissolve_management(smoothed, 'contours'+str(demValue)+'.shp', ["FID"])
+
+    # Now delete unnecessary files
+    arcpy.Delete_management('contourLines_lyr')
+    arcpy.Delete_management("raw_contours_"+str(demValue)+".shp")
+    arcpy.Delete_management("smoothed"+str(demValue)+".shp")
 
     # Get the time (Stop the timer). And send success message.
     time2 = time.clock()
@@ -430,6 +417,7 @@ def createSegments(contour_at_mean_high_water, contour_at_surge):
 
     # With spatial join, let's add these results to the segment polygons 
     final = spatialJoin(final_without_length, segments0, "Length", "Length", "max", "joined_segment.shp")
+
     # Delete the created but now unnecessary files 
     arcpy.Delete_management(random0)
     arcpy.Delete_management(random1)
@@ -476,11 +464,14 @@ if arcpy.CheckExtension("spatial") == "Available":
         raster_dem_lyr = arcpy.MakeRasterLayer_management(raster_dem, "raster_dem_lyr")
         properties_lyr = arcpy.MakeFeatureLayer_management(properties_copy, 'properties_lyr')
 
+        # Create contours from the raster layer
+        raster_to_contours = arcpy.sa.Contour(raster_dem_lyr, "raster_to_contours.shp", 1)
+
         # Create contour line for the user-specificed mean high water
-        contour_mhw = createContour(raster_dem_lyr, mean_high_water)
+        contour_mhw = createContour(raster_to_contours, mean_high_water)
         
         # Create contour line for the user-specificed storm surge level
-        contour_surge = createContour(raster_dem_lyr, surge)
+        contour_surge = createContour(raster_to_contours, surge)
 
         # Create the coastal segments
         regions = createSegments(contour_mhw, contour_surge)
@@ -542,6 +533,7 @@ if arcpy.CheckExtension("spatial") == "Available":
         arcpy.Delete_management('regions_lyr')
         arcpy.Delete_management('contour_mhw_lyr')
         arcpy.Delete_management('joined_r_p_lyr')
+        arcpy.Delete_management('raster_to_contours.shp')
 
         
         # Save results  
