@@ -67,7 +67,7 @@ Which requires the availability of these information:
 <br/>
 
 -------------------
-#### 1. How many segments? <img align="right" width="188" height="282" src="https://github.com/rajaoberison/SeaWallToolBox/blob/master/images/seawall2.png">
+#### 1. How many segments? <img align="right" width="188" height="282" src="https://github.com/rajaoberison/SeaWallToolBox/blob/master/images/seawall2.png"/>
 Segments location and length depend on the scenario (defined by the expert) in the design of the seawall.
 
 Two elevation values need to be identified in order to determine the segments:
