@@ -1,0 +1,684 @@
+# -*- coding: utf-8 -*-
+import sys, os, string, math, arcpy, traceback, time
+from datetime import datetime
+
+# Data processing packages
+import numpy as np
+import pandas as pd
+#import geopandas as gpd
+#import matplotlib.pyplot as plt
+
+arcpy.env.overwriteOutput = True
+
+#---------------------------------------------------------------------------------------------------------------------#
+# FUNCTIONS USED IN THE CODE
+#---------------------------------------------------------------------------------------------------------------------#
+#---------------------------------------------------------------------------------------------------------------------#
+# FUNCTION TO CALCULATE DISTANCE BETWEEN POINTS
+# https://community.esri.com/thread/158038
+#---------------------------------------------------------------------------------------------------------------------#
+def calculateDistance(x1,y1,x2,y2):
+    dist = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+    return dist
+
+#---------------------------------------------------------------------------------------------------------------------#
+# FUNCTION TO CALCULATE DAMAGES FROM STORM
+# From FES Coastal Defense class (https://environment.yale.edu)
+#---------------------------------------------------------------------------------------------------------------------#
+def stormDamage(value, dem, surge):
+    value = float(value)
+    dem = float(dem)
+    surge = float(surge)
+    flooded = surge-dem
+    lower = dem-2
+    upper = dem+7
+    percent = max(min(flooded/(upper-lower),1),0)
+    damage = value*percent
+    return damage
+
+#---------------------------------------------------------------------------------------------------------------------#
+# Object based geoprocessing
+#---------------------------------------------------------------------------------------------------------------------#
+class parcel:
+    def __init__(self, unique_id, value, dem):
+        self.unique_id = unique_id
+        self.value = value
+        self.dem = dem
+
+class parcel_simulation:
+    def __init__(self, surges, parcel):
+        self.surges = surges
+        self.parcel = parcel
+    #def storm_damage(parcel):
+        damages = []
+        for surge in surges:
+            flooded = surge-parcel.dem
+            lower = parcel.dem-2 # meter
+            upper = parcel.dem+7
+            percent = max(min(flooded/(upper-lower),1),0)
+            damages.append(parcel.value*percent)
+        self.damages = damages
+
+class class_segment:
+    # Wall cost
+    wall_base_height = 1.07
+    wall_altitude = 2.08
+    capex = 0.02
+    def __init__(self, s_id, wall_length):
+        #self.list_parcel = list_parcel
+        self.s_id = s_id
+        self.wall_length = wall_length
+
+    def wall_cost(segment, discount_rate=0.04, useful_life=30):
+        total_wall_cost = []
+        marginal_wall_cost = [0]
+        for surge in surges:
+            wall_cost = 3881.4 * ((surge-segment.wall_base_height)**2) * segment.wall_length
+            annual_maintenance = wall_cost * segment.capex
+            wall_maintenance = annual_maintenance * (1-math.exp(-discount_rate * useful_life)) / discount_rate
+            total_wall_cost.append(wall_cost + wall_maintenance)
+        for i in range(len(total_wall_cost)-1):
+            marginal_wall_cost.append(total_wall_cost[i+1]-total_wall_cost[i])
+        return [total_wall_cost, marginal_wall_cost]
+#---------------------------------------------------------------------------------------------------------------------#
+
+#---------------------------------------------------------------------------------------------------------------------#
+# FUNCTION FOR SPATIAL JOIN
+# http://pro.arcgis.com/en/pro-app/tool-reference/analysis/spatial-join.htm
+# https://gis.stackexchange.com/questions/199754/arcpy-field-mapping-for-a-spatial-join-keep-only-specific-columns
+#---------------------------------------------------------------------------------------------------------------------#
+def spatialJoin(target_feature, source_feature, in_field, out_field, match_option, stats, output):
+    fieldmappings = arcpy.FieldMappings()
+    fieldmappings.addTable(target_feature)
+    fieldmappings.addTable(source_feature)
+
+    # Remove unnecessary fields
+    # We'll ultimately use length and ID so we keep it here
+    #keepers = [in_field, "Id"]
+    keepers = ["Id"] + in_field     # list ==> easier way of keeping all the necessary columns
+    for field in fieldmappings.fields:
+        if field.name not in keepers:
+             fieldmappings.removeFieldMap(fieldmappings.findFieldMapIndex(field.name))
+
+    zonal_field_stats = fieldmappings.findFieldMapIndex(in_field[0])    # get the field of interest from the field list
+    fieldmap = fieldmappings.getFieldMap(zonal_field_stats)
+    field = fieldmap.outputField
+    field.name = out_field
+    field.aliasName = out_field
+    fieldmap.outputField = field
+    fieldmap.mergeRule = stats
+    fieldmappings.replaceFieldMap(zonal_field_stats, fieldmap)
+
+    # Now joining. 10 Feet is my assumption of tolerance based on my method
+    return arcpy.SpatialJoin_analysis(target_features=target_feature, join_features=source_feature,\
+                                    out_feature_class=output, join_operation="JOIN_ONE_TO_ONE",\
+                                    join_type="KEEP_ALL", field_mapping=fieldmappings,\
+                                    match_option=match_option)#, "10 Feet") # using INTERSECT may extract unnecessary segments
+
+#---------------------------------------------------------------------------------------------------------------------#
+# FUNCTION TO CREATE CONTOUR LINES FROM A SPECIFIC DEM VALUE
+#---------------------------------------------------------------------------------------------------------------------#
+def createContour(contourLines, demValue):
+    # Start a timer
+    time1 = time.clock()
+    arcpy.AddMessage("\nCreating countour line at "+str(demValue)+" Feet. "+str(datetime.now()))
+
+    # First let's make a layer of the contours
+    arcpy.MakeFeatureLayer_management(contourLines, 'contourLines_lyr')
+
+    # Select the corresponding contour lines
+    contours_at_dem = arcpy.SelectLayerByAttribute_management(\
+                         "contourLines_lyr", "ADD_TO_SELECTION", '"dem" = {0}'.format(demValue))    # rechange back to 'Contour'
+
+    raw_contours = arcpy.CopyFeatures_management(contours_at_dem, "raw_contours_"+str(demValue)+".shp")
+    smoothed0 = arcpy.cartography.SmoothLine(raw_contours, "smoothed0"+str(demValue)+".shp", "PAEK", "10 Feet")
+
+    # If there are small lines in the selected, remove them
+    # Users are not yet given control of this. Values given are based on my visual analysis of Branford case
+    if int(demValue) < 5:
+         th = 5000
+    elif int(demValue) >= 5:
+         th = 2000
+
+    with arcpy.da.UpdateCursor(smoothed0, ["SHAPE@LENGTH"]) as lines:
+         for line in lines:
+              if line[0] < th:
+                   lines.deleteRow()
+
+    del line, lines
+
+    # Now smooth the lines to remove other noises and for better visualization
+    smoothed = arcpy.cartography.SmoothLine(smoothed0, "smoothed"+str(demValue)+".shp", "PAEK", "10 Feet")
+
+    # Dissolve the remaining polyline to fomr only one feature (Necessary for coastal segment delimitation)
+    dissolved = arcpy.Dissolve_management(smoothed, 'contours'+str(demValue)+'.shp', ["FID"])
+
+    # Now delete unnecessary files
+    arcpy.Delete_management('contourLines_lyr')
+    arcpy.Delete_management(raw_contours)
+    arcpy.Delete_management("smoothed0"+str(demValue)+".shp")
+    arcpy.Delete_management("smoothed"+str(demValue)+".shp")
+
+    # Get the time (Stop the timer). And send success message.
+    time2 = time.clock()
+    arcpy.AddMessage("Contour line successfully created at "+str(demValue)+" Feet. It took "\
+                     +str(time2-time1)+" seconds")
+
+    return dissolved
+
+#---------------------------------------------------------------------------------------------------------------------#
+# FUNCTION TO DELIMITE THE SEGMENTS
+#---------------------------------------------------------------------------------------------------------------------#
+def createSegmentsOfLowLands(contour_at_mean_high_water, contour_at_surge):
+    # Start a timer
+    time1 = time.clock()
+    arcpy.AddMessage("\nSegmentation of the coastline started at "+str(datetime.now()))
+
+    # Specify a tolerance distance or minimum length of a seawall
+    # Users are not yet given control of this
+    th = 150
+
+    # Create random points along the lines (mean high water and the surge of choice)
+    # The numbers used are just my choice based on iterative observations
+    random0 = arcpy.CreateRandomPoints_management(out_path= arcpy.env.workspace, \
+                                                out_name= "random0", \
+                                                constraining_feature_class= contour_at_mean_high_water, \
+                                                number_of_points_or_field= long(1600), \
+                                                  minimum_allowed_distance = "{0} Feet".format(th))
+
+    random1 = arcpy.CreateRandomPoints_management(out_path= arcpy.env.workspace, \
+                                                    out_name= "random1", \
+                                                    constraining_feature_class= contour_at_surge, \
+                                                    number_of_points_or_field= long(1600), \
+                                                  minimum_allowed_distance = "{0} Feet".format(th))
+
+    # Perform a proximity analysis with the NEAR tool
+    arcpy.Near_analysis(random0, random1)
+    # Give each point a fixed unique ID
+    # Create the ID field
+    arcpy.AddField_management (random0, "UniqueID", "SHORT")
+    arcpy.AddField_management (random1, "UniqueID", "SHORT")
+    # Add Unique IDs
+    arcpy.CalculateField_management(random0, "UniqueID", "[FID]")
+    arcpy.CalculateField_management(random1, "UniqueID", "[FID]")
+
+    # Categorize/Separate each feature based on their near feature
+    # Crate a table view of random0
+    table0 = arcpy.MakeTableView_management(random0, "random0_table")
+    #table1 = arcpy.MakeTableView_management(random1, "random1_table")
+    # Sort the near feature for each points in random0
+    random0_sorted = arcpy.Sort_management(table0, "random0_sorted.dbf", [["NEAR_FID", "ASCENDING"]])
+
+
+    # Create "long enough" lists for each of the field of interests: ID, NEAR_ID, and NEAR_DIST
+    # (distance to closest point). I added [99999] here to extend the list length and avoid IndexError
+    list_fid = [r.getValue("UniqueID") for r in arcpy.SearchCursor(random0_sorted, ["UniqueID"])] +[99999]
+    list_nearid = [r.getValue("NEAR_FID") for r in arcpy.SearchCursor(random0_sorted, ["NEAR_FID"])]\
+                  +[99999]
+    list_neardist = [r.getValue("NEAR_DIST") for r in arcpy.SearchCursor(random0_sorted, ["NEAR_DIST"])]\
+                    +[99999]
+
+    del r
+
+    # Only take points with near feature within the specified threshold. If it's too far, it's not better
+    # than the others for a segment point
+    list_fid_filtered = [i for i in list_neardist if i < th]
+    # Then initiate a list o contain their Unique ID and Near ID
+    first_unique_id = []
+    first_near_id = []
+    # Get NEAR_ID and Unique ID for each of these points
+    for i in list_fid_filtered:
+        first_unique_id.append(list_fid[list_neardist.index(i)])
+        first_near_id.append(list_nearid[list_neardist.index(i)])
+
+    # Only take the unique values in case there are duplicates. This shoudn't happen. Just to make sure.
+    first_unique_id = [i for i in set(first_unique_id)]
+    first_near_id = [i for i in set(first_near_id)]
+
+
+    # Now create a new feature out of these points
+    # Frist let's create a Feature Layer
+    arcpy.MakeFeatureLayer_management("random0.shp", "random0_lyr")
+    # Let's select all points and export them into a new feature
+    random0_points = arcpy.SearchCursor(random0, ["UniqueID"])
+    point0 = random0_points.next()
+
+    for point0 in random0_points:
+        for i in range(len(first_unique_id)):
+            if point0.getValue("UniqueID") == first_unique_id[i]:
+                selector0 = arcpy.SelectLayerByAttribute_management(\
+                     "random0_lyr", "ADD_TO_SELECTION", '"UniqueID" = {0}'.format(first_unique_id[i]))
+
+    del point0, random0_points
+
+    new_random0 = arcpy.CopyFeatures_management(selector0, "new_random0")
+    arcpy.Delete_management('random0_lyr')
+
+
+    # Now for the new point feature, remove clusters of points around them and take only the ones
+    # with minimum NEAR_DIST
+    # First, get the geometry attributes of the new points
+    arcpy.AddGeometryAttributes_management(new_random0, "POINT_X_Y_Z_M", "", "", "")
+
+    # Create long enough list of the field of interest (same as the previous)
+    pointx = [r.getValue("POINT_X") for r in arcpy.SearchCursor(new_random0, ["POINT_X"])] +[99999]
+    pointy = [r.getValue("POINT_Y") for r in arcpy.SearchCursor(new_random0, ["POINT_Y"])] +[99999]
+    new_list_fid = [r.getValue("UniqueID") for r in arcpy.SearchCursor(new_random0, ["UniqueID"])]\
+                   +[99999]
+    new_list_nearid = [r.getValue("NEAR_FID") for r in arcpy.SearchCursor(new_random0, ["NEAR_FID"])]\
+                      +[99999]
+    new_list_neardist = [r.getValue("NEAR_DIST") for r in arcpy.SearchCursor(new_random0, ["NEAR_DIST"])]\
+                        +[99999]
+
+    del r
+
+
+    # Initiate a list of every points that has already been compared to the near points
+    garbage = []
+    # Also initiate a list for the new Unique ID and NEAR ID
+    new_unique_ID = []
+    new_near_ID = []
+    # Then, check if the points are right next to them. If so, add them to a temporary list
+    # and find the one with closest near ID (or find minimum of their NEAR_DIST)
+    for i in range(len(pointx)):
+        if i+1 < len(pointx):
+
+            # If not within the th range
+            if not calculateDistance(pointx[i], pointy[i], pointx[i+1], pointy[i+1]) < float(th)*1.5:
+                # Skip if it's in garbage
+                if new_list_nearid[i] in garbage:
+                    continue
+                else:
+                    new_unique_ID.append(new_list_fid[i])
+                    new_near_ID.append(new_list_nearid[i])
+
+            # If within the range
+            else:
+                # Skip if it's in garbage
+                if new_list_nearid[i] in garbage:
+                    continue
+                else:
+                    temp_ID = []
+                    temp_NEAR = []
+                    temp_DIST = []
+                    while True:
+                        temp_ID.append(new_list_fid[i])
+                        temp_NEAR.append(new_list_nearid[i])
+                        temp_DIST.append(new_list_neardist[i])
+                        garbage.append(new_list_nearid[i])
+                        i = i+1
+                        # Stop when within the range again. And add the last point within the range
+                        if not calculateDistance(pointx[i], pointy[i], pointx[i+1], pointy[i+1]) < 200:
+                            temp_ID.append(new_list_fid[i])
+                            temp_NEAR.append(new_list_nearid[i])
+                            temp_DIST.append(new_list_neardist[i])
+                            garbage.append(new_list_nearid[i])
+
+                            # Calculate the minimum and get the Unique ID and Near ID
+                            minD = min(temp_DIST)
+                            new_unique_ID.append(new_list_fid[new_list_neardist.index(minD)])
+                            new_near_ID.append(new_list_nearid[new_list_neardist.index(minD)])
+
+                            del temp_ID, temp_NEAR, temp_DIST
+                            break
+
+
+    # Now select these final points export them into new feature.
+    # These are the end points for the segments to be created
+    # First, make a layer out of all the random points
+    arcpy.MakeFeatureLayer_management("random0.shp", "random0_lyr")
+    arcpy.MakeFeatureLayer_management("random1.shp", "random1_lyr")
+
+    # Then select and export the end points into feature0 and feature1
+    # Based on new_unique_ID for random0
+    random0_points = arcpy.SearchCursor(random0, ["UniqueID"])
+    point0 = random0_points.next()
+    for point0 in random0_points:
+        for i in range(len(new_unique_ID)):
+            if point0.getValue("UniqueID") == new_unique_ID[i]:
+                selected0 = arcpy.SelectLayerByAttribute_management(\
+                     "random0_lyr", "ADD_TO_SELECTION", '"UniqueID" = {0}'.format(new_unique_ID[i]))
+
+    feature0 = arcpy.CopyFeatures_management(selected0, "feature0")
+
+    # Based on new_near_ID for random1
+    random1_points = arcpy.SearchCursor(random1, ["UniqueID"])
+    point1 = random1_points.next()
+    for point1 in random1_points:
+        for k in range(len(new_near_ID)):
+            if point1.getValue("UniqueID") == new_near_ID[k]:
+                selected1 = arcpy.SelectLayerByAttribute_management(\
+                     "random1_lyr", "ADD_TO_SELECTION", '"UniqueID" = {0}'.format(new_near_ID[k]))
+
+    feature1 = arcpy.CopyFeatures_management(selected1, "feature1")
+
+    del point0, point1, random0_points, random1_points
+    arcpy.Delete_management('random0_lyr')
+    arcpy.Delete_management('random1_lyr')
+
+
+    # Now for the actual creation of the coastal segments
+    # Which include creation of polygon and splitting the contours as the corresponding points
+    # STEPS NECESSARY FOR POLYGON CREATION
+    # Let's first add geometry attributes to these points
+    arcpy.AddGeometryAttributes_management(feature0, "POINT_X_Y_Z_M", "", "", "")
+    arcpy.AddGeometryAttributes_management(feature1, "POINT_X_Y_Z_M", "", "", "")
+
+    # Let's create lines that connects points from feature0 to feature1
+    # Initiate a POLYLINE feature class for these lines
+    arcpy.CreateFeatureclass_management (arcpy.env.workspace, "connector_lines.shp", "POLYLINE")
+
+    # Then for each of the points in feature0, get the correspondingin feature1
+    # And create a line for each of the two points
+    with arcpy.da.SearchCursor(feature0, ["NEAR_FID", "POINT_X", "POINT_Y"]) as features0:
+        for feat0 in features0:
+
+            with arcpy.da.SearchCursor(feature1, ["UniqueID", "POINT_X", "POINT_Y"]) as features1:
+                x=0
+                for feat1 in features1:
+                    x = x+1
+                    theseTwoPoints = []
+
+                    if feat0[0] == feat1[0]:
+                        # Get coordinates
+                        X0, Y0 = feat0[1], feat0[2]
+                        X1, Y1 = feat1[1], feat1[2]
+                        # Append coordinates
+                        theseTwoPoints.append(arcpy.PointGeometry(arcpy.Point(X0, Y0)))
+                        theseTwoPoints.append(arcpy.PointGeometry(arcpy.Point(X1, Y1)))
+                        # Create line from the coordinates
+                        subline = arcpy.PointsToLine_management(theseTwoPoints, "subline"+str(x)+".shp")
+                        # Append all lines into one feature
+                        lines = arcpy.Append_management(["subline"+str(x)+".shp"], "connector_lines.shp")
+                        # Then delete subline as it's now unnecessary
+                        arcpy.Delete_management(subline)
+
+                        continue
+
+
+    del feat0, feat1, features0, features1
+
+    # Now that the connectors are created, let's split the segments
+    # Before splitting contours into segments, let's integrate the points and the segments
+    # Just in case, there are misalignment
+    arcpy.Integrate_management([contour_at_mean_high_water, feature0])
+    arcpy.Integrate_management([contour_at_surge, feature1])
+    segments0 = arcpy.SplitLineAtPoint_management(contour_at_mean_high_water, feature0, "segments0.shp", "10 Feet")
+    segments1 = arcpy.SplitLineAtPoint_management(contour_at_surge, feature1, "segments1.shp", "10 Feet")
+    # And let's give fixed unique ID for each segment
+    arcpy.CalculateField_management(segments0, "Id", "[FID]")
+    arcpy.CalculateField_management(segments1, "Id", "[FID]")
+
+    # Now with the split segments and connector lines, let's make segment polygon of the segments
+    almost_segment_polygons = arcpy.FeatureToPolygon_management([segments0, segments1, lines],\
+                                                                "almost_segment_polygons.shp")
+    # Adding unique ID to the segment polygons
+    arcpy.CalculateField_management(almost_segment_polygons, "Id", "[FID]")
+
+    # The Feature to Polygon process also created polygons that are surrounded by polygons
+    # These are because these areas are surrounded by flooded areas at surge.
+    # They are above the surge and technically safe. So, let's remove them.
+    arcpy.MakeFeatureLayer_management(almost_segment_polygons, 'almost_segment_polygons_lyr')
+    arcpy.MakeFeatureLayer_management(segments0, 'segments0_lyr')
+    # Only the polygons within the mean_high_water segments are at risk
+    arcpy.SelectLayerByLocation_management('almost_segment_polygons_lyr', 'INTERSECT', 'segments0_lyr') # safe to use INTERSECT here
+    #low_lands_without_length = arcpy.CopyFeatures_management('almost_segment_polygons_lyr', 'low_lands.shp')
+    arcpy.CopyFeatures_management('almost_segment_polygons_lyr', 'low_lands.shp')
+
+    # Now removing unnecessary parts of segments0
+    arcpy.MakeFeatureLayer_management('low_lands.shp', 'low_lands_lyr')
+    arcpy.SelectLayerByLocation_management('segments0_lyr', 'WITHIN', 'low_lands_lyr') # WITHIN for better results
+    arcpy.CopyFeatures_management('segments0_lyr', 's0_lengthed.shp')
+
+    arcpy.Delete_management('segments0_lyr')
+    arcpy.Delete_management('almost_segment_polygons_lyr')
+    arcpy.Delete_management('low_lands_lyr')
+
+    # For the new polygons, let's add the corresponding seawall length
+    # Let's add Length field to both first
+    #arcpy.AddField_management(low_lands_without_length, "AOI_Length", "SHORT")
+    arcpy.AddField_management('low_lands.shp', "AOI_Length", "SHORT")
+    arcpy.AddField_management('s0_lengthed.shp', "S_Length", "SHORT")
+    # Calculation of the length
+    with arcpy.da.UpdateCursor('s0_lengthed.shp', ["SHAPE@LENGTH", "S_Length"]) as segments_0:
+         for segment_0 in segments_0:
+              length = segment_0[0] * 0.3048    # in meters
+              segment_0[1] = length
+              segments_0.updateRow(segment_0)
+    del segment_0, segments_0
+
+    # With spatial join, let's add these results to the segment polygons
+    low_lands = spatialJoin('low_lands.shp', 's0_lengthed.shp', ["S_Length"], "AOI_Length",\
+                    "SHARE_A_LINE_SEGMENT_WITH", "First", "low_lands_segments.shp")
+
+    # Stop the timer
+    time2 = time.clock()
+
+    arcpy.AddMessage("Seawall segments and regions successfully created. It took "\
+                     +str(time2-time1)+" seconds")
+
+
+    # Delete the created but now unnecessary files
+    arcpy.Delete_management("random0.shp")
+    arcpy.Delete_management("random1.shp")
+    arcpy.Delete_management("new_random0.shp")
+    arcpy.Delete_management("random0_sorted.shp")
+    arcpy.Delete_management("feature0.shp")
+    arcpy.Delete_management("feature1.shp")
+    #arcpy.Delete_management(segments0)
+    arcpy.Delete_management("segments1.shp")
+    #arcpy.Delete_management("almost_segment_polygons.shp")
+    arcpy.Delete_management("connector_lines.shp")
+    #arcpy.Delete_management("low_lands.shp")
+
+
+    # These are the vulnerable areas
+    return low_lands
+
+
+
+#---------------------------------------------------------------------------------------------------------------------#
+# MAIN CODE
+#---------------------------------------------------------------------------------------------------------------------#
+# Check to see if Spatial Analyst license is available
+if arcpy.CheckExtension("spatial") == "Available":
+
+    try:
+
+        # Activate Spatial Analyst
+        arcpy.CheckOutExtension("spatial")
+
+        # Necessary user inputs
+        raster_dem = arcpy.GetParameterAsText(0)       		# LIDAR DEM
+        raster_to_contours = arcpy.GetParameterAsText(1)    # Pre-created Contours (to improve performance)
+        mean_high_water = arcpy.GetParameterAsText(2)       # In meter recommended
+        surge = arcpy.GetParameterAsText(3)                 # In meter recommended
+        properties = arcpy.GetParameterAsText(4)            # Get geosptatial data of the properties
+        building = arcpy.GetParameterAsText(5)              # Field of Building value in the properties shapefile
+        zoneField = arcpy.GetParameterAsText(6)             # Field for unique ID of buildings the properties shapefile
+
+        # Set Workspace for the results as defined by the user
+        arcpy.env.workspace = arcpy.GetParameterAsText(7)
+        # Save final Output
+        output = arcpy.GetParameterAsText(8)
+
+        # Let's first create a copy of the properties' feature we'll use
+        properties_copy = arcpy.CopyFeatures_management(properties, "properties_copy")
+
+        # Create layers for the properties and the raster
+        raster_dem_lyr = arcpy.MakeRasterLayer_management(raster_dem, "raster_dem_lyr")
+        properties_lyr = arcpy.MakeFeatureLayer_management(properties_copy, 'properties_lyr')
+
+        # Create contours from the raster layer
+        #raster_to_contours = arcpy.sa.Contour(raster_dem_lyr, "raster_to_contours.shp", 1)
+
+        # Create contour line for the user-specificed mean high water
+        contour_mhw = createContour(raster_to_contours, mean_high_water)
+        # Create contour line for the user-specificed storm surge level
+        contour_surge = createContour(raster_to_contours, surge)
+        # Create the coastal segments
+        lowland_segments = createSegmentsOfLowLands(contour_mhw, contour_surge)
+
+        # Calculating storm damage for each properties
+        # Let's fits add a field
+        arcpy.AddField_management(properties_copy, "S_Damage", "LONG")
+
+        # Now let's get the mean elevation of each properties with zonal statistics
+        # Do Zonal Statistics as Table
+        zonal_stats = arcpy.sa.ZonalStatisticsAsTable(properties_lyr, zoneField, raster_dem_lyr,\
+        "zonal_stats", "NODATA", "MEAN")
+        # Let's joing the result with the properties' feature
+        arcpy.JoinField_management(properties_copy, zoneField, zonal_stats, zoneField)
+        # Now the actual calculation, using UpdateCursor
+        with arcpy.da.UpdateCursor(properties_copy, [building, "MEAN", "S_Damage"]) as segments:
+            for segment in segments:
+                value = float(segment[0])
+                dem = segment[1]
+                segment[2] = stormDamage(value, dem, surge)
+                segments.updateRow(segment)
+        del segment, segments
+
+        # With spatial join, let's add these results to the segment polygons
+        joined_r_p = spatialJoin(lowland_segments, properties_copy, ["S_Damage", "AOI_Length"], "T_Damage",\
+                                    "INTERSECT", "sum", "joined_r_p.shp")
+
+        ##-------------------------------------------------------------##
+        # Now simply create a shapefile of all the vulnerable properties
+        # Create Layer from the segment polygons UNNECESSARY??
+        lowland_segments_lyr = arcpy.MakeFeatureLayer_management(lowland_segments, 'lowland_segments_lyr')
+        lowland_properties = arcpy.SelectLayerByLocation_management('properties_lyr', 'INTERSECT', 'lowland_segments_lyr')
+        arcpy.CopyFeatures_management(lowland_properties, 'lowland_properties')
+        lowland_properties_lyr = arcpy.MakeFeatureLayer_management('lowland_properties.shp', 'lowland_properties_lyr')
+
+        # Handling segments
+        #segments = []
+        l_s_lyr = arcpy.MakeFeatureLayer_management(lowland_segments, "l_s_lyr")
+        with arcpy.da.SearchCursor(lowland_segments, ["Id", "AOI_Length"]) as l_s:
+            for s in l_s:
+                s_select = arcpy.SelectLayerByAttribute_management('l_s_lyr', "NEW_SELECTION", '"Id" = {0}'.format(s[0]))
+                p_select = arcpy.SelectLayerByLocation_management('lowland_properties_lyr', 'INTERSECT', s_select)
+                arcpy.CopyFeatures_management(s_select, 's_'+str(s[0])) # Creating segment shapefile
+                arcpy.CopyFeatures_management(p_select, 'p_'+str(s[0])) # Creating properties within the segment shapefile
+                #segments.append(segment(s[0], s[1]))    # Creating segment objects
+
+                # Handling parcels by segment
+                parcels = []
+                with arcpy.da.SearchCursor('p_'+str(s[0])+'.shp', ["UNIQUE_ID", "VALUE_BLDG", "MEAN"]) as l_p:
+                    for p in l_p:
+                        parcels.append(parcel(p[0], p[1], p[2]))
+                parcels_data = pd.DataFrame({
+                    "ID":[p.unique_id for p in parcels],
+                    "Value":[p.value for p in parcels],
+                    "DEM":[p.dem for p in parcels]
+                })
+                #arcpy.AddMessage('\np_'+str(s[0]+'\n', parcels_data)
+                surges = list(np.arange(1.07, 4, 0.01)) # Mean high water ~ wall base height is at 1.07m
+                surges = [round(surge, 2) for surge in surges]
+                #parcel_simulation(surges)
+                results = [] # results for each surge level
+                for i in range(len(parcels)):   # for all parcels
+                    simulation = parcel_simulation(surges, parcels[i])
+                    results.append(simulation.damages)
+
+                results_by_parcel = pd.DataFrame(results, columns=surges)
+                #arcpy.AddMessage(results_by_parcel.head())
+
+                results_by_surge = []
+                for i in surges:
+                    # sum of all damages across all parcels in the segments
+                    results_by_surge.append(sum(results_by_parcel[i]))
+                # Storm surge probability
+                years = 30
+                discount_rate = 0.04
+                mu_location = 1.8181056
+                sigma_scale = 0.1468738
+                k_shape = 0.2965298
+                inflection_point = 2.04
+                slr_trend = 0.002933765 # m/year
+                p_slr = [0]
+                for i in range(years-1):
+                    p = 0
+                    p_slr.append(p+slr_trend)
+
+                marginal_benefits = []
+
+                for surge in surges:
+                    i=0
+                    expected_damages = 0
+                    for year in range(years):
+                        if surge > (inflection_point+p_slr[year]):
+                            slr_factor = (math.exp(-1*((1+k_shape*((surge+0.01)-(mu_location+p_slr[year]))/sigma_scale)**(-1/k_shape)))) - \
+                            (math.exp(-1*((1+k_shape*((surge-0.01)-(mu_location+p_slr[year]))/sigma_scale)**(-1/k_shape))))
+                        else:
+                            slr_factor = 1.25-1.11*(surge-p_slr[year])+0.25*(surge-p_slr[year])**2 # linear model
+                        expected_damages += (slr_factor * results_by_surge[i] * math.exp(-discount_rate*(year+1))) # (year+1) to be verified
+                    marginal_benefits.append(expected_damages)
+                    i+=1
+
+                # Processing of the segment
+                test = class_segment(s[0], s[1])    # Creating segment objects
+                test_wall_cost = test.wall_cost()
+                test_wall_marginal_cost = test_wall_cost[1]
+
+                # Efficient defense
+                idx = np.argwhere(np.diff(np.sign(np.array(marginal_benefits) - np.array(test_wall_marginal_cost)))).flatten()
+                arcpy.AddMessage("\nSegment s_{0} | Parcels: p_{0}".format(str(s[0])))
+                for i in idx:
+                    arcpy.AddMessage("\nEfficient wall height at: {0} m with benefits totalling {1} USD".format(
+                            str(surges[i]),
+                            format(round(sum(marginal_benefits[0:i]) - sum(test_wall_marginal_cost[0:i])),',.0f')))
+
+        ##-------------------------------------------------------------##
+
+        # Let's remove the surrounded polygons which are not at risk but automatically
+        # created by spatial join
+        arcpy.MakeFeatureLayer_management(contour_mhw, 'contour_mhw_lyr')
+        arcpy.MakeFeatureLayer_management(joined_r_p, 'joined_r_p_lyr')
+        # Only those intersecting segments at mean high water are at risk
+        arcpy.SelectLayerByLocation_management('joined_r_p_lyr', 'INTERSECT', 'contour_mhw_lyr')
+
+        # Save results
+        before_output = arcpy.CopyFeatures_management('joined_r_p_lyr', 'before_output')
+
+        # Now the calculation of the damage per segment length, using UpdateCursor
+        # Add field for per segment damage
+        arcpy.AddField_management(before_output, "PS_Damage", "FLOAT")
+
+        with arcpy.da.UpdateCursor(before_output, ["AOI_Length", "T_Damage", "PS_Damage"]) as segments:
+            for segment in segments:
+                length = float(segment[0])
+                damage = float(segment[1])
+                segment[2] = damage / length
+                segments.updateRow(segment)
+        del segment, segments
+
+        # Let's delete all now unnecessary layers
+        arcpy.Delete_management('raster_dem_lyr')
+        arcpy.Delete_management('properties_lyr')
+        arcpy.Delete_management('regions_lyr')
+        arcpy.Delete_management('contour_mhw_lyr')
+        arcpy.Delete_management('joined_r_p_lyr')
+        arcpy.Delete_management('joined_r_p.shp')
+        arcpy.Delete_management('raster_to_contours.shp')
+        arcpy.Delete_management(contour_mhw)
+        arcpy.Delete_management(contour_surge)
+
+        # Save results
+        arcpy.CopyFeatures_management(before_output, output)
+        arcpy.Delete_management(before_output)
+
+        # Adding the results in the dataframe
+        mxd = arcpy.mapping.MapDocument("CURRENT")
+        dataFrame = arcpy.mapping.ListDataFrames(mxd, "*")[0]
+        addLayer0 = arcpy.mapping.Layer(output)
+        arcpy.mapping.AddLayer(dataFrame, addLayer0)
+
+    except Exception as e:
+        arcpy.AddError('\n' + "Script failed because: \t\t" + e.message)
+        exceptionreport = sys.exc_info()[2]
+        fullermessage = traceback.format_tb(exceptionreport)[0]
+        arcpy.AddError("at this location: \n\n" + fullermessage + "\n")
+
+else:
+    # Report error message if Spatial Analyst license is unavailable
+    arcpy.AddMessage("Spatial Analyst license is unavailable")
