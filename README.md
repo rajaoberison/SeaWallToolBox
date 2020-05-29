@@ -1,3 +1,5 @@
+This is still a work in progress. I started working on this as part of the Geospatial Software Design class at Yale FES. My submission at the time is in the pdf document.
+
 ```diff
 -! This is an older version of the tool. -!
 -! I am currently working on the new updates privately as part of my contract with CIRCA, -!
