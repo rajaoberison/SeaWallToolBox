@@ -1,5 +1,5 @@
 ```diff
--! This is an older version of the tool. New updates are coming! -!
+-! This is an older version of the tool. I am currently working on the new updates privately as part of my contract with CIRCA but they're coming soon! -!
 ```
 
 ## SeaWall ToolBox
