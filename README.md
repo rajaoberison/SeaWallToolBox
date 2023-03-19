@@ -2,8 +2,7 @@ This is still a work in progress. I started working on this as part of the Geosp
 
 ```diff
 -! This is an older version of the tool. -!
--! I am currently working on the new updates privately as part of my contract with CIRCA, -!
--! but they're coming soon! -!
+-! The updated version is not public yet -!
 ```
 
 ## SeaWall ToolBox
